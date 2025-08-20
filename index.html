@@ -1,0 +1,385 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Dashboard de Monitoramento de Coletores</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #f8fafc;
+        }
+        :root {
+            --henry-blue: #003876;
+            --henry-red: #d92d20;
+        }
+        .details-section {
+            transition: max-height 0.5s ease-in-out, opacity 0.5s ease-in-out;
+            max-height: 0;
+            opacity: 0;
+            overflow: hidden;
+        }
+        .details-section.open {
+            max-height: 800px;
+            opacity: 1;
+        }
+        .loader {
+            border: 5px solid #f3f3f3;
+            border-top: 5px solid var(--henry-blue);
+            border-radius: 50%;
+            width: 50px;
+            height: 50px;
+            animation: spin 1s linear infinite;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+    </style>
+</head>
+<body class="text-gray-800">
+
+    <div class="container mx-auto p-4 sm:p-6 lg:p-8">
+        <header class="mb-8 text-center">
+            <h1 class="text-3xl md:text-4xl font-bold" style="color: var(--henry-blue);">Dashboard de Coletores</h1>
+            <p class="text-gray-500 mt-2">Monitore o status e a manutenção de todos os seus dispositivos.</p>
+        </header>
+
+        <div class="bg-white p-4 rounded-lg shadow-md mb-8 sticky top-4 z-10">
+            <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+                <div class="md:col-span-1">
+                    <label for="search-input" class="block text-sm font-medium text-gray-700">Pesquisar</label>
+                    <input type="text" id="search-input" placeholder="Digite nº, licença, etc..." class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 sm:text-sm p-2">
+                </div>
+                <div class="md:col-span-1">
+                    <label for="filter-key" class="block text-sm font-medium text-gray-700">Filtrar por</label>
+                    <select id="filter-key" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 sm:text-sm p-2">
+                        <option value="all">Todos os coletores</option>
+                        <option value="workedOn">Manutenção</option>
+                        <option value="androidVersion">Versão do Android</option>
+                    </select>
+                </div>
+                <div id="filter-value-container" class="md:col-span-1">
+                </div>
+            </div>
+        </div>
+        
+        <div id="loader" class="flex justify-center items-center h-64">
+            <div class="loader"></div>
+        </div>
+        
+        <div id="no-results" class="text-center text-gray-500 py-16 hidden">
+            <h3 class="text-xl font-semibold">Nenhum coletor encontrado</h3>
+            <p>Tente ajustar sua pesquisa ou filtros.</p>
+        </div>
+
+        <div id="collectors-grid" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
+        </div>
+    </div>
+
+    <script type="module">
+        // --- MÓDULOS FIREBASE ---
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, doc, setDoc, onSnapshot, collection, writeBatch, getDocs, query } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+const firebaseConfig = {
+  apiKey: "AIzaSyCz2pfN8rUYV5b2bHFrLNo11o8A-ibFT3I",
+  authDomain: "teste-373fe.firebaseapp.com",
+  projectId: "teste-373fe",
+  storageBucket: "teste-373fe.firebasestorage.app",
+  messagingSenderId: "1030230803754",
+  appId: "1:1030230803754:web:16e35cf2526106fab5ca53"
+};
+
+        // --- INICIALIZAÇÃO DO FIREBASE ---
+        const app = initializeApp(firebaseConfig);
+        const db = getFirestore(app);
+        const auth = getAuth(app);
+
+        // --- VARIÁVEIS GLOBAIS ---
+        const TOTAL_COLLECTORS = 57;
+        let allCollectorsData = []; 
+
+        const collectorsGrid = document.getElementById('collectors-grid');
+        const loader = document.getElementById('loader');
+        const noResults = document.getElementById('no-results');
+        const searchInput = document.getElementById('search-input');
+        const filterKey = document.getElementById('filter-key');
+        const filterValueContainer = document.getElementById('filter-value-container');
+
+        // --- AUTENTICAÇÃO E CARREGAMENTO DE DADOS ---
+        onAuthStateChanged(auth, (user) => {
+            if (user) {
+                const collectorsCollectionRef = collection(db, `coletores`);
+                initializeCollectorsData(collectorsCollectionRef);
+                listenForCollectorUpdates(collectorsCollectionRef);
+            }
+        });
+
+        async function authenticateUser() {
+            try {
+                await signInAnonymously(auth);
+            } catch (error) { 
+                console.error("Authentication failed:", error); 
+                loader.innerHTML = '<p class="text-red-500">Falha na conexão. Verifique se a chave do Firebase está correta e se a internet está funcionando.</p>';
+            }
+        }
+
+        async function initializeCollectorsData(collectorsCollectionRef) {
+            const querySnapshot = await getDocs(query(collectorsCollectionRef));
+            if (querySnapshot.empty) {
+                const batch = writeBatch(db);
+                for (let i = 1; i <= TOTAL_COLLECTORS; i++) {
+                    const collectorDocRef = doc(collectorsCollectionRef, `coletor-${i}`);
+                    batch.set(collectorDocRef, {
+                        collectorNumber: i, licenseNumber: "", serialNumberEnd: "", androidVersion: "9",
+                        checklist: [
+                            { id: 'bateria', task: "Verificar bateria", done: false }, { id: 'leitor', task: "Limpar leitor", done: false },
+                            { id: 'software', task: "Atualizar software", done: false }, { id: 'case', task: "Verificar case", done: false }
+                        ], comments: ""
+                    });
+                }
+                await batch.commit();
+            }
+        }
+
+        function listenForCollectorUpdates(collectorsCollectionRef) {
+            onSnapshot(collectorsCollectionRef, (snapshot) => {
+                loader.style.display = 'none';
+                let docs = [];
+                snapshot.forEach(doc => docs.push(doc.data()));
+                allCollectorsData = docs.sort((a, b) => a.collectorNumber - b.collectorNumber);
+                renderFilteredCollectors();
+            }, (error) => {
+                console.error("Erro ao ouvir atualizações:", error);
+                loader.innerHTML = '<p class="text-red-500">Erro de conexão com o banco de dados.</p>';
+            });
+        }
+
+        async function updateCollectorData(collectorNumber, updatedData) {
+            const collectorDocRef = doc(db, `coletores`, `coletor-${collectorNumber}`);
+            try { 
+                await setDoc(collectorDocRef, updatedData, { merge: true }); 
+            } catch (error) { 
+                console.error("Erro ao atualizar o coletor: ", error); 
+            }
+        }
+
+        // --- LÓGICA DE RENDERIZAÇÃO E FILTRO ---
+        function renderFilteredCollectors() {
+            const searchTerm = searchInput.value.toLowerCase();
+            const key = filterKey.value;
+            const valueSelect = document.getElementById('filter-value');
+            const value = valueSelect ? valueSelect.value : null;
+
+            let filteredData = allCollectorsData.filter(collector => {
+                const searchMatch = searchTerm === '' ||
+                    collector.collectorNumber.toString().includes(searchTerm) ||
+                    (collector.licenseNumber && collector.licenseNumber.toLowerCase().includes(searchTerm)) ||
+                    (collector.serialNumberEnd && collector.serialNumberEnd.toLowerCase().includes(searchTerm));
+
+                if (!searchMatch) return false;
+                
+                switch (key) {
+                    case 'workedOn':
+                        const hasBeenWorkedOn = collector.checklist.some(item => item.done);
+                        return hasBeenWorkedOn.toString() === value;
+                    case 'androidVersion': return collector.androidVersion === value;
+                    default: return true;
+                }
+            });
+
+            const openDetails = new Set();
+            document.querySelectorAll('.details-section.open').forEach(el => {
+                openDetails.add(el.closest('.collector-card').id);
+            });
+            
+            collectorsGrid.innerHTML = '';
+            if (filteredData.length === 0) {
+                noResults.style.display = 'block';
+            } else {
+                noResults.style.display = 'none';
+                filteredData.forEach(data => {
+                    const collectorCard = createCollectorCard(data);
+                    if (openDetails.has(collectorCard.id)) {
+                        const details = collectorCard.querySelector('.details-section');
+                        details.classList.add('open');
+                        collectorCard.querySelector('.toggle-details').textContent = 'Ver menos';
+                    }
+                    collectorsGrid.appendChild(collectorCard);
+                });
+            }
+        }
+
+        function updateFilterValueUI() {
+            const key = filterKey.value;
+            let html = '';
+            if (key !== 'all') {
+                html += `<label for="filter-value" class="block text-sm font-medium text-gray-700">Opção</label><select id="filter-value" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 sm:text-sm p-2">`;
+                switch (key) {
+                    case 'workedOn':
+                        html += `<option value="true">Trabalhados</option><option value="false">Não Trabalhados</option>`;
+                        break;
+                    case 'androidVersion':
+                        html += `<option value="9">Android 9</option><option value="11">Android 11</option>`;
+                        break;
+                }
+                html += `</select>`;
+            }
+            filterValueContainer.innerHTML = html;
+            
+            const filterValueSelect = document.getElementById('filter-value');
+            if(filterValueSelect) {
+                filterValueSelect.addEventListener('change', renderFilteredCollectors);
+            }
+        }
+
+        function createCollectorCard(data) {
+            const card = document.createElement('div');
+            card.id = `coletor-${data.collectorNumber}`;
+            card.className = `collector-card rounded-lg shadow-md p-5 border-t-4 border-blue-600 bg-white`;
+            
+            const checklistHTML = (data.checklist || []).map(item => `
+                <div class="flex items-center space-x-2 checklist-item">
+                    <input type="checkbox" data-task-id="${item.id}" ${item.done ? 'checked' : ''} class="h-4 w-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500 shrink-0 cursor-pointer">
+                    <input type="text" value="${item.task}" data-task-id="${item.id}" class="flex-grow p-1 border border-gray-200 rounded-md text-sm focus:ring-blue-500 focus:border-blue-500">
+                    <button data-task-id="${item.id}" class="delete-task-btn text-red-500 hover:text-red-700 text-lg font-bold leading-none px-2 rounded-full hover:bg-red-100">&times;</button>
+                </div>
+            `).join('');
+
+            card.innerHTML = `
+                <div class="flex justify-between items-start">
+                    <div>
+                        <h2 class="text-xl font-bold" style="color: var(--henry-blue);">Coletor ${data.collectorNumber}</h2>
+                    </div>
+                    <button class="toggle-details text-sm font-semibold" style="color: var(--henry-blue);">Ver mais</button>
+                </div>
+                <div class="mt-4 space-y-4">
+                    <div>
+                        <label class="block text-sm font-medium text-gray-600 mb-1">Nº da Licença:</label>
+                        <input type="text" data-field="licenseNumber" value="${data.licenseNumber || ''}" class="w-full p-2 border border-gray-300 rounded-md shadow-sm">
+                    </div>
+                </div>
+                <div class="details-section mt-6 pt-6 border-t border-gray-200">
+                    <div class="space-y-4">
+                        <div>
+                            <label class="block text-sm font-medium text-gray-600 mb-1">Final do Nº de Série:</label>
+                            <input type="text" data-field="serialNumberEnd" value="${data.serialNumberEnd || ''}" class="w-full p-2 border border-gray-300 rounded-md shadow-sm">
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium text-gray-600 mb-2">Versão do Android:</label>
+                            <div class="flex items-center space-x-4">
+                                <div class="flex items-center">
+                                    <input type="radio" name="android-version-${data.collectorNumber}" value="9" ${data.androidVersion === '9' ? 'checked' : ''} class="h-4 w-4 text-blue-600 border-gray-300">
+                                    <label class="ml-2 block text-sm text-gray-900">Android 9</label>
+                                </div>
+                                <div class="flex items-center">
+                                    <input type="radio" name="android-version-${data.collectorNumber}" value="11" ${data.androidVersion === '11' ? 'checked' : ''} class="h-4 w-4 text-blue-600 border-gray-300">
+                                    <label class="ml-2 block text-sm text-gray-900">Android 11</label>
+                                </div>
+                            </div>
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium text-gray-600 mb-2">Checklist de Manutenção:</label>
+                            <div class="space-y-2">${checklistHTML}</div>
+                            <button class="add-task-btn mt-2 text-sm font-semibold" style="color: var(--henry-blue);">+ Adicionar tarefa</button>
+                        </div>
+                        <div>
+                            <label for="comments-${data.collectorNumber}" class="block text-sm font-medium text-gray-600 mb-1">Comentários:</label>
+                            <textarea id="comments-${data.collectorNumber}" data-field="comments" rows="3" class="w-full p-2 border border-gray-300 rounded-md shadow-sm">${data.comments || ''}</textarea>
+                        </div>
+                    </div>
+                </div>
+            `;
+            return card;
+        }
+
+        // --- MANIPULADORES DE EVENTOS ---
+        function getChecklistDataFromCard(card) {
+            const checklistData = [];
+            card.querySelectorAll('.checklist-item').forEach(item => {
+                const checkbox = item.querySelector('input[type="checkbox"]');
+                const textInput = item.querySelector('input[type="text"]');
+                checklistData.push({
+                    id: checkbox.dataset.taskId,
+                    task: textInput.value,
+                    done: checkbox.checked
+                });
+            });
+            return checklistData;
+        }
+
+        collectorsGrid.addEventListener('click', (e) => {
+            const card = e.target.closest('.collector-card');
+            if (!card) return;
+
+            const collectorNumber = parseInt(card.id.split('-')[1]);
+            const currentData = allCollectorsData.find(c => c.collectorNumber === collectorNumber);
+
+            if (e.target.classList.contains('toggle-details')) {
+                const details = card.querySelector('.details-section');
+                details.classList.toggle('open');
+                e.target.textContent = details.classList.contains('open') ? 'Ver menos' : 'Ver mais';
+            }
+            else if (e.target.classList.contains('add-task-btn')) {
+                const newChecklist = [...currentData.checklist, { id: 'task-' + Date.now(), task: 'Nova tarefa', done: false }];
+                updateCollectorData(collectorNumber, { ...currentData, checklist: newChecklist });
+            }
+            else if (e.target.classList.contains('delete-task-btn')) {
+                const taskIdToDelete = e.target.dataset.taskId;
+                const newChecklist = currentData.checklist.filter(item => item.id !== taskIdToDelete);
+                updateCollectorData(collectorNumber, { ...currentData, checklist: newChecklist });
+            }
+        });
+
+        collectorsGrid.addEventListener('change', (e) => {
+            const card = e.target.closest('.collector-card');
+            if (!card) return;
+
+            const collectorNumber = parseInt(card.id.split('-')[1]);
+            const currentData = allCollectorsData.find(c => c.collectorNumber === collectorNumber);
+            let updatedData = { ...currentData };
+
+            if (e.target.matches('input[type="radio"][name^="android-version"]')) {
+                updatedData.androidVersion = e.target.value;
+            } else if (e.target.matches('input[type="checkbox"]')) {
+                updatedData.checklist = getChecklistDataFromCard(card);
+            }
+            updateCollectorData(collectorNumber, updatedData);
+        });
+
+        collectorsGrid.addEventListener('focusout', (e) => {
+             const card = e.target.closest('.collector-card');
+            if (!card) return;
+
+            if (e.target.matches('input[data-field], textarea[data-field], .checklist-item input[type="text"]')) {
+                 const collectorNumber = parseInt(card.id.split('-')[1]);
+                const currentData = allCollectorsData.find(c => c.collectorNumber === collectorNumber);
+                
+                const updatedData = {
+                    ...currentData,
+                    licenseNumber: card.querySelector('[data-field="licenseNumber"]').value,
+                    serialNumberEnd: card.querySelector('[data-field="serialNumberEnd"]').value,
+                    comments: card.querySelector('[data-field="comments"]').value,
+                    checklist: getChecklistDataFromCard(card)
+                };
+                updateCollectorData(collectorNumber, updatedData);
+            }
+        });
+
+        // --- INICIALIZAÇÃO DOS FILTROS E AUTENTICAÇÃO ---
+        searchInput.addEventListener('input', renderFilteredCollectors);
+        filterKey.addEventListener('change', () => {
+            updateFilterValueUI();
+            renderFilteredCollectors();
+        });
+        
+        updateFilterValueUI();
+        authenticateUser();
+
+    </script>
+</body>
+</html>
